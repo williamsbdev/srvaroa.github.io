@@ -19,8 +19,8 @@ starting point.
 ## The log
 
 The application ran mostly on default settings (I don't have them at
-hand unfortunatly), with the G1 collector (`-XX:+UseG1GC`) and used
-aprox. the following settings to produce GC logs:
+hand unfortunately), with the G1 collector (`-XX:+UseG1GC`) and used
+aprox. the following settings to generate GC logs:
 
     -Xloggc:$PATH
     -XX:+PrintGCDetails
@@ -109,117 +109,119 @@ effects.
   the JVM just moved ~6GB to Old Gen, only to garbage-collect it shortly
   after.  (╯°□°）╯︵ ┻━┻
 
-We're seeing here a case of **allocation pressure**: the application
-generates too many short-lived objects, the JVM must trigger more
-frequent Minor Collections, this makes live objects age faster and hit
-the **tenuring threshold** earlier, which means getting them promoted to
-the Old Gen prematurely (**premature promotion**.)
+This behaviour is common under high **allocation pressure**. The
+application creates too many short-lived objects that fill the Young Gen
+fast. This forces the JVM to trigger more frequent Minor Collections,
+which in turn causes live objects to age faster. They hit the **tenuring
+threshold** earlier, being promoted to the Old Gen prematurely
+(**premature promotion**) as they will soon be unused and eligible for
+collection.
 
 ## Why is this bad?
 
 Take a look at the grey rectangle at the bottom of the graph, precisely
 in the interval where the JVM is growing the Old Gen. This is how
-GcViewer represents a GC Pause. Looking at the timestamps, this is well
+`GcViewer` represents a GC Pause. Looking at the timestamps, this is well
 over a minute.
 
 Why the pause? Well, none of this memory shuffling is cheap. To make
 things worse, these minor collections are also stop-the-world (STW)
-events: this means that the application was completely stopped.
+events: this means that the application was completely stopped.  Let's
+look at the GC logs to understand the details. Below is the relevant log
+for the event.
 
-Let's look at the GC logs to understand the details. This is the
-relevant log for the event.
+      1 	2016-03-15T20:00:26.471+0100: 8079.342: [GC pause (G1 Evacuation Pause) (young)
+      2 	Desired survivor size 593494016 bytes, new threshold 15 (max 15)
+      3 	- age   1:      60136 bytes,      60136 total
+      4 	- age   2:       4312 bytes,      64448 total
+      5 	- age   3:       3864 bytes,      68312 total
+      6 	- age   4:       3784 bytes,      72096 total
+      7 	- age   5:       3784 bytes,      75880 total
+      8 	- age   6:       7568 bytes,      83448 total
+      9 	- age   7:       3784 bytes,      87232 total
+      10	- age   8:       3784 bytes,      91016 total
+      11	- age   9:       3784 bytes,      94800 total
+      12	- age  10:       7568 bytes,     102368 total
+      13	- age  11:       3784 bytes,     106152 total
+      14	- age  12:       3784 bytes,     109936 total
+      15	- age  13:       3784 bytes,     113720 total
+      16	- age  14:       7568 bytes,     121288 total
+      17	- age  15:       3784 bytes,     125072 total
+      18	 (to-space exhausted), 80.1974703 secs]
+      19	[Parallel Time: 77390.8 ms, GC Workers: 18]
+      20	   [GC Worker Start (ms): Min: 8079342.1, Avg: 8079342.2, Max: 8079342.2, Diff: 0.1]
+      21	   [Ext Root Scanning (ms): Min: 0.2, Avg: 0.3, Max: 0.4, Diff: 0.1, Sum: 5.2]
+      22	   [Update RS (ms): Min: 155.4, Avg: 267.9, Max: 567.9, Diff: 412.4, Sum: 4821.3]
+      23	      [Processed Buffers: Min: 2, Avg: 7.3, Max: 14, Diff: 12, Sum: 131]
+      24	   [Scan RS (ms): Min: 0.1, Avg: 0.4, Max: 3.1, Diff: 3.0, Sum: 6.3]
+      25	   [Code Root Scanning (ms): Min: 0.0, Avg: 0.0, Max: 0.1, Diff: 0.1, Sum: 0.1]
+      26	   [Object Copy (ms): Min: 76814.9, Avg: 77116.1, Max: 77231.5, Diff: 416.5, Sum: 1388089.1]
+      27	   [Termination (ms): Min: 0.0, Avg: 5.9, Max: 7.2, Diff: 7.2, Sum: 106.6]
+      28	   [GC Worker Other (ms): Min: 0.0, Avg: 0.1, Max: 0.2, Diff: 0.2, Sum: 2.1]
+      29	   [GC Worker Total (ms): Min: 77390.4, Avg: 77390.6, Max: 77390.8, Diff: 0.3, Sum: 1393030.8]
+      30	   [GC Worker End (ms): Min: 8156732.7, Avg: 8156732.8, Max: 8156732.9, Diff: 0.2]
+      31	[Code Root Fixup: 0.0 ms]
+      32	[Code Root Migration: 0.3 ms]
+      33	[Code Root Purge: 0.0 ms]
+      34	[Clear CT: 1.6 ms]
+      35	[Other: 2804.7 ms]
+      36	   [Evacuation Failure: 2778.0 ms]
+      37	   [Choose CSet: 0.0 ms]
+      38	   [Ref Proc: 5.6 ms]
+      39	   [Ref Enq: 0.0 ms]
+      40	   [Redirty Cards: 10.0 ms]
+      41	   [Free CSet: 1.5 ms]
+      42	[Eden: 9044.0M(9044.0M)->0.0B(320.0M) Survivors: 4096.0K->1132.0M Heap: 16.2G(18.0G)->14.8G(18.0G)]
+      43    [Times: user=77.62 sys=2.54, real=80.20 secs]
 
-	1 	2016-03-15T20:00:26.471+0100: 8079.342: [GC pause (G1 Evacuation Pause) (young)
-	2 	Desired survivor size 593494016 bytes, new threshold 15 (max 15)
-	3 	- age   1:      60136 bytes,      60136 total
-	4 	- age   2:       4312 bytes,      64448 total
-	5 	- age   3:       3864 bytes,      68312 total
-	6 	- age   4:       3784 bytes,      72096 total
-	7 	- age   5:       3784 bytes,      75880 total
-	8 	- age   6:       7568 bytes,      83448 total
-	9 	- age   7:       3784 bytes,      87232 total
-	10	- age   8:       3784 bytes,      91016 total
-	11	- age   9:       3784 bytes,      94800 total
-	12	- age  10:       7568 bytes,     102368 total
-	13	- age  11:       3784 bytes,     106152 total
-	14	- age  12:       3784 bytes,     109936 total
-	15	- age  13:       3784 bytes,     113720 total
-	16	- age  14:       7568 bytes,     121288 total
-	17	- age  15:       3784 bytes,     125072 total
-	18	 (to-space exhausted), 80.1974703 secs]
-	19	[Parallel Time: 77390.8 ms, GC Workers: 18]
-	20	   [GC Worker Start (ms): Min: 8079342.1, Avg: 8079342.2, Max: 8079342.2, Diff: 0.1]
-	21	   [Ext Root Scanning (ms): Min: 0.2, Avg: 0.3, Max: 0.4, Diff: 0.1, Sum: 5.2]
-	22	   [Update RS (ms): Min: 155.4, Avg: 267.9, Max: 567.9, Diff: 412.4, Sum: 4821.3]
-	23	      [Processed Buffers: Min: 2, Avg: 7.3, Max: 14, Diff: 12, Sum: 131]
-	24	   [Scan RS (ms): Min: 0.1, Avg: 0.4, Max: 3.1, Diff: 3.0, Sum: 6.3]
-	25	   [Code Root Scanning (ms): Min: 0.0, Avg: 0.0, Max: 0.1, Diff: 0.1, Sum: 0.1]
-	26	   [Object Copy (ms): Min: 76814.9, Avg: 77116.1, Max: 77231.5, Diff: 416.5, Sum: 1388089.1]
-	27	   [Termination (ms): Min: 0.0, Avg: 5.9, Max: 7.2, Diff: 7.2, Sum: 106.6]
-	28	   [GC Worker Other (ms): Min: 0.0, Avg: 0.1, Max: 0.2, Diff: 0.2, Sum: 2.1]
-	29	   [GC Worker Total (ms): Min: 77390.4, Avg: 77390.6, Max: 77390.8, Diff: 0.3, Sum: 1393030.8]
-	30	   [GC Worker End (ms): Min: 8156732.7, Avg: 8156732.8, Max: 8156732.9, Diff: 0.2]
-	31	[Code Root Fixup: 0.0 ms]
-	32	[Code Root Migration: 0.3 ms]
-	33	[Code Root Purge: 0.0 ms]
-	34	[Clear CT: 1.6 ms]
-	35	[Other: 2804.7 ms]
-	36	   [Evacuation Failure: 2778.0 ms]
-	37	   [Choose CSet: 0.0 ms]
-	38	   [Ref Proc: 5.6 ms]
-	39	   [Ref Enq: 0.0 ms]
-	40	   [Redirty Cards: 10.0 ms]
-	41	   [Free CSet: 1.5 ms]
-	42	[Eden: 9044.0M(9044.0M)->0.0B(320.0M) Survivors: 4096.0K->1132.0M Heap: 16.2G(18.0G)->14.8G(18.0G)]
-	43    [Times: user=77.62 sys=2.54, real=80.20 secs]
+There is a lot of information there, but let's focus on the key relevant
+points for the topic we're investigating.
 
-There is a log of information there, but let's focus on the key relevant
-points for our example.
-
-Lines 1-18 give a summary of the event enclosed in brackets `[GC Pause
+Lines 1-18 yield a summary of the event enclosed in brackets `[GC Pause
 ..`.  The first two lines explain that the event was triggered due to
-"G1 Evacuation pause (young)", meaning that the Young Gen filled up and
-needed to be cleaned up.  I won't go into the survivor spaces in this
-post, but notice how lines 3-17 report the distribution of ages for
-objects in the Young Gen.  Line 18 `(to-space exhausted), 80.1974703
-secs]` indicates that the target space (Old Gen) is not big enough to
-hold all the objects that need to be moved. The full event takes
-80.1974703s.
+`G1 Evacuation pause (young)`, meaning that the Young Gen filled up and
+needed to be cleaned up.  Lines 3-17 give details about the distribution
+of object ages in the Young Gen, which I'll skip as it's out of scope of
+this post.  Line 18 (`(to-space exhausted)...`) indicates that the
+target space (Old Gen) is not big enough to hold all the objects that
+need to be moved. The full event takes 80.2s.
 
 Line 19 explains that this collection used 18 threads and took over 77s.
 
-    19  [Parallel Time: 77390.8 ms, GC Workers: 18]
+    19 [Parallel Time: 77390.8 ms, GC Workers: 18]
 
 Lines 20-30 cover how long it took to execute the different phases of
 the collection. Most times went to Object Copy:
 
-	26     [Object Copy (ms): Min: 76814.9, Avg: 77116.1, Max: 77231.5, Diff: 416.5, Sum: 1388089.1]
+    26 [Object Copy (ms): Min: 76814.9, Avg: 77116.1, Max: 77231.5, Diff: 416.5, Sum: 1388089.1]
 
-Min/Max/Avg are for an individual thread. The Sum is the aggregate for
-all worker threads (hence, Sum = N threads * Avg). All 18 threads are
-spending 77s on average simply to copy objects around.
+Min/Max/Avg are stats per thread. The Sum is the aggregate for all
+worker threads (hence, Sum = N threads * Avg). Each one of the 18
+threads are spending 77s on average simply to copy objects around.
 
 We also have a non-negligible times in other phases. Line 22 reveals
 that almost 5s aggregated were spent in the Update RS phase.
 
-	22	   [Update RS (ms): Min: 155.4, Avg: 267.9, Max: 567.9, Diff: 412.4, Sum: 4821.3]
+    22 [Update RS (ms): Min: 155.4, Avg: 267.9, Max: 567.9, Diff: 412.4, Sum: 4821.3]
 
-RS stands for [Remembered
+`RS` stands for [Remembered
 Set](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector-tuning.htm#GUID-A0343B53-A690-4DDE-98F9-9877096DBF0F),
-an internal datastructure kept by the JVM assocaited to each region.
-Its purpose is to track inbound from other regions.  Whenever the
-application updates references (e.g. a field in an object), the JVM
-takes care of updating the RS. For efficiency reasons these updates are
-buffered and processed concurrently with the application. However, when
-the JVM starts a collection the JVM holds updates in this buffer while
-GC workers perform an initial scan of the heap (Ext Root Scan at L21)
-looking for live objects. Only when this is complete the RS updates in
-the buffer are drained.  It looks like this step is taking significant
-time. We'll try to explain possible causes later.
+an internal data structure kept by the JVM for each region.  Its purpose
+is to track inbound from other regions.  Whenever the application
+updates the references (e.g. when we assign a reference field in an
+object), the JVM takes care of updating the RS.
+
+For efficiency reasons those updates are buffered and processed
+concurrently with the application. However, when the JVM starts a
+collection the JVM holds pending updates in this buffer while GC workers
+perform an initial scan of the heap (`Ext Root Scan` at L21) looking for
+live objects. Only when this is complete the RS updates in the buffer
+are drained.  It looks like this step is taking significant time. We'll
+try to explain possible causes later.
 
 Finally, we spot one more phase with significant times:
 
-	36     [Evacuation Failure: 2778.0 ms]
+    36 [Evacuation Failure: 2778.0 ms]
 
 This line indicates that the JVM wasn't able to move any more objects to
 Old Gen and instead kept objects in their current location, reassigning
@@ -238,29 +240,33 @@ hypothesis is that the JVM is reacting to this in one of these ways:
 * Compacting or resizing regions. The [region
   size](http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html)
   is a power of 2 between 1MB and 32MB, but the JVM aims at having ~2048
-  regions. The evacuation failures may be prommpting the JVM to compact
-  / resize regions, causing more objects to move around.
+  regions. The evacuation failures may be prompting the JVM to compact /
+  resize regions, causing more objects to move around.
 * The JVM rollbacks the move of other objects that were already copied
   out of this region.
 
-From one oft he articles linked above I learned that it would've helped
-to use `-XX:+G1PrintHeapRegions` to see more detailed events on each
-region. Good to know for the next one!
+From one of the articles linked above I learned that it would've helped
+to use `-XX:+G1PrintHeapRegions` to generate more detailed events on
+each region. Good to know for the next time.
 
 Moving on. Line 42:
 
-	42	[Eden: 9044.0M(9044.0M)->0.0B(320.0M) Survivors: 4096.0K->1132.0M Heap: 16.2G(18.0G)->14.8G(18.0G)]
+    42 [Eden: 9044.0M(9044.0M)->0.0B(320.0M) Survivors: 4096.0K->1132.0M Heap: 16.2G(18.0G)->14.8G(18.0G)]
 
-Eden was completely emptied (9044MB-> 0), and it was also shrunk from
-9044MB to 320MB.  Some of the objects evacuated from Eden were not yet
-over the tenuring threshold and remained in the Young Gen within the
-survivor space, which now holds 1132MB. The total heap size remains at
-18GB, and usage went from 16.2GB -> 14.8GB. Overall, of the 9GB
-evacuated from Young Gen, 2 were released, 1 remained in the survivor
-space, and 6 were moved over to Old Gen.
+Young Gen is both Eden (containing brand new objects)+ Survivor spaces
+(containing objects that survived &gt;1 Minor collections, but &lt;
+tenuring threshold).  Eden was completely emptied (9044MB-> 0), and it
+was also shrunk from 9044MB to 320MB.  Some of the objects evacuated
+from Eden stayed in Survivor spaces as they were not yet over the
+tenuring threshold, 1132MB in total.
 
-This would've been useful to spot a more verbose description of the
-resizing decisions taken by the JVM.
+The total heap size remains at 18GB (we had an `-Xmx18g`), and usage
+went from 16.2GB -> 14.8GB.  Overall, of the 9GB evacuated from Young
+Gen. 2GB were released, 1GB remained in the survivor space, and 6GB were
+moved over to Old Gen.
+
+This setting would've been useful to spot a more verbose description of
+the resizing decisions taken by the JVM.
 
     -XX:+PrintAdaptiveSizePolicy
 
@@ -268,55 +274,113 @@ Unfortunately it was disabled at the time that the log was collected.
 
 Finally, line 43 summarizes the times.
 
-	43    [Times: user=77.62 sys=2.54, real=80.20 secs]
+    43 [Times: user=77.62 sys=2.54, real=80.20 secs]
 
-"User" here is CPU time spent by the JVM. "sys" is time in OS calls
-or waiting for system events. "Real" is clock time where the application
+`User` here is CPU time spent by the JVM. `sys` is time in OS calls
+or waiting for system events. `Real` is clock time where the application
 was stopped. So, to summarize:
 
 1. 18 threads moved ~6GB worth of objects.
 2. The full copy took about 77s for each thread.
-3. Update RS took in aggregate 5s.
+3. `Update RS` took in aggregate 5s.
 4. Evacuation Failures consumed over 2s.
-5. Real pause time was 80s, with >2s for sys and 77 for user.
+5. Real pause time was 80s, where 77.6s were in user space, 2.5s in OS.
+
+Let's look at the two main issues.
 
 ## The problem with premature promotions
 
-The most obvious observation is that we're running into trouble because
-we're promoting objects prematurely from the Young Gen to the Old.  This
-causes useless copies to Old Gen, region resizes, etc.  Promoting
-soon-to-be-dead objects is not desirable because collecting objects from
-the Old Gen risks triggering a Full GC, which is [more
-expensive](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector-tuning.htm#JSGCT-GUID-0DD93225-0BCF-4605-B365-E9833F5BD2FC)
-than in Young Gen.
+The most obvious observation is that we're running into trouble as a
+result of allocation pressure.  Frequent Minor GCs are having to scan
+the live objects and moving those that remain across survivor spaces. At
+some points, the JVM ends up spilling objects to Old Gen (and in the
+particular case shown in the graph, triggering a region resize.)
 
-The long term effect is even worse.
+Moreover, those promoted objects close to being garbage and will need to be
+collected at some point by a Major collection (minor -> young gen, major -> old
+gen). These are the relevant logs from our example:
 
-TODO: enter in the point that objects accumulate in old gen
+    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-start]
+    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-end, 0.0001351 secs]
+    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-mark-start]
+    2016-03-15T20:01:51.521+0100: 8164.392: [GC concurrent-mark-end, 3.6726632 secs]
+    2016-03-15T20:01:51.522+0100: 8164.392: [GC remark 8164.393: [GC ref-proc, 0.0003795 secs], 0.1287467 secs]
+     [Times: user=0.17 sys=0.01, real=0.12 secs]
+    2016-03-15T20:01:51.714+0100: 8164.585: Total time for which application threads were stopped: 0.0634409 seconds
+    2016-03-15T20:01:51.714+0100: 8164.585: [GC concurrent-cleanup-start]
+    2016-03-15T20:01:51.797+0100: 8164.667: [GC concurrent-cleanup-end, 0.0826101 secs]
 
+Which correspond to a light blue line in the graphs. This is relatively cheap
+under G1 because the JVM is able to do most of the work concurrently with the
+application.  Nevertheless, our app still still suffered a 0.08s freeze, which
+is really not good if it's minimally latency sensitive.
 
-If
-those objects were left in Young Gen for a bit longer, they'd lose
-all references.  We want to stay in the area with see-saw pattern.
+This Major collection needs an initial phase, which can be spotted with the
+"initial-mark" tag in a Minor collection (the Old Gen collector piggy backs on
+it.) I'm cutting the details, but note the additional time:
 
-1. Generage less garbage.
-2. 
+    2016-03-15T20:01:46.983+0100: 8159.853: [GC pause (G1 Evacuation Pause) (young) (initial-mark)
+    Desired survivor size 75497472 bytes, new threshold 1 (max 15)
+    [...]
+     [Times: user=10.49 sys=0.13, real=0.86 secs]
 
-- Try to hit a soft spot in region sizes to remain in the left hand side
-  pattern. This is however a fragile equilibrium, and hard to achieve in
-  non trivial applications.
-- Zero allocations.
+Another 0.86s freeze.
 
-## Why those huge pause times?
+This is in fact a relatively good case. If the pattern of prematurely pushing
+objects to Old Gen continues, we may risk filling up Old Gen and forcing the
+JVM to trigger a Full GC, which is [more
+expensive](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector-tuning.htm#JSGCT-GUID-0DD93225-0BCF-4605-B365-E9833F5BD2FC) the absolute worst case.
 
-There are several awkward points here.
+### Preventing premature promotions
 
-(1) + (2) imply that each thread's throughput was a tiny 4.3MB/s. Just
-for the sake of comparison, the same application running in a similar
-hardware had GC logs was making 407 MB/s. Regardless of the
-theoretical JVM throughput, a 100x difference indicates that
-something is impacting the performance of GC worker threads.  It's
-not about the amount of garbage we're generating.
+In general, we want to aim at tuning our workloads for two properties:
+
+* **Minimize Minor collections** (so that we avoid scans over the live
+  set in the Young Gen, and copying between survivor spaces.)  This is
+  achieved by:
+* **Make each Minor collection count**: by tuning your app's workload so
+  that each collection releases sufficient space in the Young gen to
+  avoid promoting any objects.
+
+The solution is usually a combination of both.
+
+Having larger a Young Gen helps accomodate more objects (therefore less
+Minor GCs) and clean up more on each one. Some handy options for this
+are `-XX:NewRatio`, `XX:G1MaxNewSizePercent`, `-XX:G1NewSizePercent`
+which are [well
+documented](http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html).
+However fine tuning region sizes is a fragile equilibrium and hard to
+achieve in non trivial applications. In practise, it's better to just
+use `-XX:MaxGCPauseMillis=<number>` so the JVM can try to size regions
+(and tune other parameters) in the best possible way to meet those
+targets. They are, however, not guarantees but best-effort. Note that
+[fixing Young Gen sizes overrides the target pause
+goal](http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html)
+
+In my experience having a relatively precise idea of your app's
+allocation rate is important and effective. Knowing how much memory you
+allocate during a request also tells you the garbage that the JVM will
+have to clean after it's served. This information, plus heap sizes,
+helps doing reasonable capacity planning on your servers.
+
+For example, at 1MB/request and 100 requests/s, a Young gen with 100MB
+will fill up once per second.
+
+Of course, generating less garbage always helps, but that's a topic for
+another post.
+
+## Poor GC throughput
+
+Although our application's workload is causing too much work on the
+garbage collector, looking at the actual times they look excessive.
+
+Having 18 threads move ~6GB in 77s *per thread* implies that each
+thread's throughput was a tiny 4.3MB/s. Just for the sake of comparison,
+the same application running in a similar hardware spit GC logs
+reporting making 407 MB/s. Regardless of the theoretical JVM throughput,
+a 100x difference indicates that something is impacting the performance
+of GC worker threads.  It's not about only about the amount of garbage
+we're generating.
 
 LinkedIn has a
 [couple](https://engineering.linkedin.com/garbage-collection/garbage-collection-optimization-high-throughput-and-low-latency-java-applications)
@@ -348,15 +412,3 @@ option:
 
 As seen here, the `sys` time is negligible, and instead GC threads are
 spending a lot of time idle waiting for CPU time.
-
----
-
-Quoting from [Monica Beckwith](http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html)
-"Avoid explicitly setting young generation size with the -Xmn option or
-any or other related option such as -XX:NewRatio. Fixing the size of the
-young generation overrides the target pause-time goal.""
-
-
-
-Fat_1 at 2016-02-25T11:58:06.827+0800
-

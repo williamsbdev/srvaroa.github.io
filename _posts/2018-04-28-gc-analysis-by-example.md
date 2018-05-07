@@ -1,18 +1,22 @@
 ---
 layout: post
-title:  "GC forensics by example: allocation pressure and multi-second pauses"
+title:  "GC forensics by example: multi-second pauses and allocation
+pressure"
 date:   2018-04-28 11:31:22 +0200
 categories: gc jvm java garbage-collection latency gc-pause
 ---
 
-This post will use a real example to illustrate the concept of
-allocation pressure as a cause of pathological behaviours on the JVM's
-garbage collector. I assume some basic familiarity with the topic, you
-know what a generational collector is, what is the basic lifecycle of an
-object, that the G1 collector structures the heap in regions, etc. If
-you want more info on these topics the [Oracle JDK
-documentation](https://docs.oracle.com/javase/9/gctuning/) is a good
+This post will analyze Hotspot GC logs exhibiting large GC pauses (&gt;
+1 min), touching on topics such as allocation pressure or system load as
+a cause of pathological behaviours on the JVM's garbage collector.  I
+will assume some familiarity with GC, that you understand the basic
+lifecycle of an object, have notions of what a generational collector is
+and how the G1 collector structures the heap. If you want more info on
+these topics I recommend [Oracle JDK
+documentation](https://docs.oracle.com/javase/9/gctuning/) as a good
 starting point.
+
+## The log
 
 The application ran mostly on default settings (I don't have them at
 hand unfortunatly), with the G1 collector (`-XX:+UseG1GC`) and used
@@ -59,51 +63,48 @@ Generation (pink area), a darker pink line shows Used Old Gen. In the
 Young Gen, usage is represented with a light grey line.
 
 According to the graph, the application allocated new objects in the
-Young Gen until it eventually filled up. At those points, (when the grey
-line hit the upwards limit of the yellow area), the JVM was forced to
-make room in the Young Gen. This is called a **Minor Collection**. After
-memory was released, the application continued creating objects and the
-cycle repeated.
+Young Gen until it eventually filled up (when the grey line hits the top
+limit of the yellow area.). At these points, the JVM was forced to make
+room in the Young Gen by triggering a **Minor Collection**.  Memory was
+released and utilisation in the Young Gen dropped back to the bottom of
+the yellow area. The application continued creating objects and the
+cycle repeated, forming that typical see-saw pattern.
 
-Minor collections recover memory in two ways. First, by releasing memory
-consumed by objects that are no longer referenced. This is what happens
-up to about 20:00:00. In that interval, we see a common see-saw pattern
-showing that the JVM was being able to keep up with the application. It
-was collecting all 8.5GB of Young Gen on each iteration.
+Minor collections recover memory in two ways.  First, by releasing
+memory consumed by objects that are no longer referenced. This allowed
+the JVM to keep up with the application memory usage by collecting all
+8.5GB on each iteration.
 
-But this pattern changes after 20:00, where the size of both the Old Gen
-(pink area) and its utilisation (pink line) start growing. The reason is
-that the JVM found live objects in the Young Gen that survived several
-collections and decided to promote them to Old Gen. This is also called
-**tenuring**. The "tenuring threshold" is the maximum number of Young
-Collections (or "age") that an object may survive before being promoted
-to Old Gen.
+But this changes right after 20:00:00 where the size of both the Old Gen
+(pink area) and its utilisation (pink line) grow. This happens because
+the JVM found live objects in the Young Gen that had survived already
+several minor collections (this is the "age" of an object). The JVM
+decides heuristically a maximum age for objects to remain in the Young
+Gen (the **tenuring threshold**).  After an object exceeds it, the
+collector will be promoted to the Old Gen.
 
 The JVM had to expand the Old Gen<sup>[1](#foot1)</sup> because it was
 now seeing more capacity requirements. (I will keep speaking about
-Young/Old Gen in the abstract, although the G1 collector does not keep a
-single space for each generation and instead divides the heap in
-regions. If you're not familiar with this check out [this overview of
-the heap layout in
-G1](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector.htm#JSGCT-GUID-15921907-B297-43A4-8C48-DC88035BC7CF))
+Young/Old Gen as individual contiguous space, in G1 this is valid from a
+logical point of view, but the actual heap layout [is
+different](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector.htm#JSGCT-GUID-15921907-B297-43A4-8C48-DC88035BC7CF).)
 
-The diff between (1) and (2)
-suggests that over half of the Young Gen was moved to Old Gen. It turns
-out that the JVM had a fixed max heap of 18GB (-Xmx18g) so the JVM
-wasn't able to extend it in order to make room for the bigger Old Gen.
-So instead, it shrunk the Young Gen. This brought two interesting
+The diff between (1) and (2) suggests that over half of the Young Gen
+was moved to Old Gen. The JVM had a fixed max heap of 18GB (-Xmx18g) so
+it wasn't able to extend it in order to make room for the bigger Old
+Gen.  So instead, it shrunk the Young Gen. This brought two interesting
 effects.
 
     REMOVE: 1 == tip of the grey line right at the start of the resize
 	    2 == tip of the pink line right at the end of the resize
 
-
-* First, because the application kept allocating new objects at the same
-  rate, the Young Gen filled up much faster, causing more frequent Young
-  Collections forming a tighter (and narrower, cleaning up less memory)
-  see-saw pattern.
-* Second, shortly after growing the Old Gen, and after two cycles in the
-  tigher see-saw pattern (3), the used Old Gen (pink line) suddenly
+* First, Young Gen filled up much faster because the application kept
+  allocating new objects at the same rate. The result were more frequent
+  Young Collections forming a tighter (and narrower, cleaning up less
+  memory) see-saw pattern.
+* Second, shortly after growing the Old Gen we see a tigher see-saw
+  pattern (right below 20:02:00 mark). After two cycles in this tigher
+  see-saw pattern (3), utilisation in the Old Gen (pink line) suddenly
   drops to the same level as it was prior to the resize. In other words,
   the JVM just moved ~6GB to Old Gen, only to garbage-collect it shortly
   after.  (╯°□°）╯︵ ┻━┻
@@ -122,7 +123,7 @@ GcViewer represents a GC Pause. Looking at the timestamps, this is well
 over a minute.
 
 Why the pause? Well, none of this memory shuffling is cheap. To make
-things worse, these minor collections are also Stop The World (STW)
+things worse, these minor collections are also stop-the-world (STW)
 events: this means that the application was completely stopped.
 
 Let's look at the GC logs to understand the details. This is the

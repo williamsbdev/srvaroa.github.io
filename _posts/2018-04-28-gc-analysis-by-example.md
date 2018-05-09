@@ -18,9 +18,10 @@ starting point.
 
 ## The log
 
-The application ran mostly on default settings (I don't have them at
-hand unfortunately), with the G1 collector (`-XX:+UseG1GC`) and used
-aprox. the following settings to generate GC logs:
+The application ran with Oracle's JRE 1.8 mostly on default settings (I
+didn't get access to the concrete parameters). It used the G1 collector
+(`-XX:+UseG1GC`) and aproximately the following settings regarding GC
+logs:
 
     -Xloggc:$PATH
     -XX:+PrintGCDetails
@@ -28,11 +29,10 @@ aprox. the following settings to generate GC logs:
     -XX:+PrintPromotionFailure
     -XX:+PrintGCApplicationStoppedTime
 
-The logs are written at `$PATH`. In this case, they were filled with
-logs similar to this:
+This would output logs at `$PATH`, with content similar to this:
 
 	...
-	2016-03-15T17:45:47.751+0100: 0.621: [GC pause (G1 Evacuation Pause) (young)
+	2017-03-15T17:45:47.751+0100: 0.621: [GC pause (G1 Evacuation Pause) (young)
 	Desired survivor size 4194304 bytes, new threshold 15 (max 15)
 	, 0.0213976 secs]
 	   [Parallel Time: 9.5 ms, GC Workers: 18]
@@ -46,14 +46,17 @@ behaving over time. A tool like [GC
 Viewer](https://github.com/chewiebug/GCViewer) comes handy in these
 situations.
 
+This section correspond to one of the large pauses that we will be
+looking into:
+
 <p align="center">
     <a href="/assets/gcviewer_sample_1.png">
 	<img src="/assets/gcviewer_sample_1.png">
     </a>
 </p>
 
-The graph shows time on the horizontal axis. Both memory size in MBs and
-pause time are shown in seconds on the vertical axis.
+The horizontal axis shows time. Both memory size in MBs and pause time
+are shown in seconds on the vertical axis.
 
 Two stacked areas represent the size of the Young and Old Generation
 (yellow and pink respectively). We had about 9.5GB Old Gen plus 8.5GB of
@@ -62,67 +65,66 @@ Usage is represented with thin lines inside each area. In the Old
 Generation (pink area), a darker pink line shows Used Old Gen. In the
 Young Gen, usage is represented with a light grey line.
 
-According to the graph, the application allocated new objects in the
-Young Gen until it eventually filled up (when the grey line hits the top
-limit of the yellow area.). At these points, the JVM was forced to make
-room in the Young Gen by triggering a **Minor Collection**.  Memory was
-released and utilisation in the Young Gen dropped back to the bottom of
-the yellow area. The application continued creating objects and the
-cycle repeated, forming that typical see-saw pattern.
+The see-saw pattern that we see for the first half of the graph
+represents a stable cycle. In each iteration, the application allocated
+new objects in the Young Gen until it eventually filled up (identifiable
+by the grey line hitting the top limit of the yellow area.). Then the
+JVM was forced to make room in the Young Gen by triggering a **Minor
+Collection**.  Memory was released and utilisation in the Young Gen
+dropped back to the bottom of the yellow area. The application continued
+creating objects and the cycle repeated.
 
-Minor collections recover memory in two ways.  First, by releasing
-memory consumed by objects that are no longer referenced. This allowed
-the JVM to keep up with the application memory usage by collecting all
-8.5GB on each iteration.
+Minor collections recover memory in two ways.  First, they release
+memory consumed by objects residing in the Young Gen when they are no
+longer referenced. This allowed the JVM to keep up with the application
+memory usage by collecting all 8.5GB on each iteration.
 
-But this changes right after 20:00:00 where the size of both the Old Gen
-(pink area) and its utilisation (pink line) grow. This happens because
-the JVM found live objects in the Young Gen that had survived already
-several minor collections (this is the "age" of an object). The JVM
-decides heuristically a maximum age for objects to remain in the Young
-Gen (the **tenuring threshold**).  After an object exceeds it, the
-collector will be promoted to the Old Gen.
+But this changes right after 20:00:00, where we appreciate the size of
+both the Old Gen (pink area) and its utilisation (pink line) grow. The
+JVM promotes objects from the Young Gen based on a maximum age The
+maximum age (defined as the number of minor collections that an object
+survived in the Young Gen) is called the **tenuring threshold**. After
+an object exceeds that threshold, the collector will promote it to the
+Old Gen.
 
-The JVM had to expand the Old Gen<sup>[1](#foot1)</sup> because it was
-now seeing more capacity requirements. (I will keep speaking about
-Young/Old Gen as individual contiguous space, in G1 this is valid from a
-logical point of view, but the actual heap layout [is
+According to our logs, the JVM was promoting so many objects that the
+Old Gen filled up, so it was necessary to expand it. (I will keep
+speaking about Young/Old Gen as individual contiguous space, in G1 this
+is valid from a logical point of view, but the actual heap layout [is
 different](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector.htm#JSGCT-GUID-15921907-B297-43A4-8C48-DC88035BC7CF).)
 
-The diff between (1) and (2) suggests that over half of the Young Gen
-was moved to Old Gen. The JVM had a fixed max heap of 18GB (-Xmx18g) so
-it wasn't able to extend it in order to make room for the bigger Old
-Gen.  So instead, it shrunk the Young Gen. This brought two interesting
-effects.
+The diff between (1) and (2) suggests that in the event we have on the
+graph, over half of the Young Gen was moved to Old Gen. The JVM had a
+fixed heap of 18GB (-Xmx18g) so it wasn't able to simply expand the
+heap.  Instead, it shrunk the Young Gen to reassign the space to the old
+Gen. This brought two interesting effects.
 
     REMOVE: 1 == tip of the grey line right at the start of the resize
 	    2 == tip of the pink line right at the end of the resize
 
-* First, Young Gen filled up much faster because the application kept
-  allocating new objects at the same rate. The result were more frequent
-  Young Collections forming a tighter (and narrower, cleaning up less
-  memory) see-saw pattern.
-* Second, shortly after growing the Old Gen we see a tigher see-saw
-  pattern (right below 20:02:00 mark). After two cycles in this tigher
-  see-saw pattern (3), utilisation in the Old Gen (pink line) suddenly
-  drops to the same level as it was prior to the resize. In other words,
-  the JVM just moved ~6GB to Old Gen, only to garbage-collect it shortly
-  after.  (╯°□°）╯︵ ┻━┻
+* First, Young Gen filled up much faster. The app kept allocating new
+  objects at the same rate, but the Young Gen is smaller, so right below
+  the 20:02:00 mark we see a tighter see-saw pattern that indicates more
+  frequent Young Collections (of course, each iteration releases just a
+  bit of memory.)
+* Second, after two cycles in the tigher see-saw pattern, utilisation in
+  the Old Gen (pink line) suddenly drops to the same level as it was
+  prior to the resize. The JVM had just moved ~6GB to Old Gen, only to
+  garbage-collect it shortly after.  (╯°□°）╯︵ ┻━┻
 
 This behaviour is common under high **allocation pressure**. The
 application creates too many short-lived objects that fill the Young Gen
 fast. This forces the JVM to trigger more frequent Minor Collections,
-which in turn causes live objects to age faster. They hit the **tenuring
-threshold** earlier, being promoted to the Old Gen prematurely
-(**premature promotion**) as they will soon be unused and eligible for
-collection.
+which in turn causes live objects to age faster. That makes them hit the
+**tenuring threshold** earlier, causing **premature promotions** to the
+Old Gen as they will soon be unused and eligible for collection.
 
 ## Why is this bad?
 
-Take a look at the grey rectangle at the bottom of the graph, precisely
-in the interval where the JVM is growing the Old Gen. This is how
-`GcViewer` represents a GC Pause. Looking at the timestamps, this is well
-over a minute.
+Take a look at the grey rectangle at the bottom-right of the graph,
+precisely in the interval where the JVM is growing the Old Gen. This is
+how GcViewer represents a GC Pause. Looking at the timestamps, this is
+well over a minute.
 
 Why the pause? Well, none of this memory shuffling is cheap. To make
 things worse, these minor collections are also stop-the-world (STW)
@@ -130,7 +132,7 @@ events: this means that the application was completely stopped.  Let's
 look at the GC logs to understand the details. Below is the relevant log
 for the event.
 
-      1 	2016-03-15T20:00:26.471+0100: 8079.342: [GC pause (G1 Evacuation Pause) (young)
+      1 	2017-03-15T20:00:26.471+0100: 8079.342: [GC pause (G1 Evacuation Pause) (young)
       2 	Desired survivor size 593494016 bytes, new threshold 15 (max 15)
       3 	- age   1:      60136 bytes,      60136 total
       4 	- age   2:       4312 bytes,      64448 total
@@ -199,17 +201,18 @@ Min/Max/Avg are stats per thread. The Sum is the aggregate for all
 worker threads (hence, Sum = N threads * Avg). Each one of the 18
 threads are spending 77s on average simply to copy objects around.
 
-We also have a non-negligible times in other phases. Line 22 reveals
-that almost 5s aggregated were spent in the Update RS phase.
+We have a non-negligible times in other phases. Line 22 reveals that
+almost 5s aggregated were spent in the Update RS phase.
 
     22 [Update RS (ms): Min: 155.4, Avg: 267.9, Max: 567.9, Diff: 412.4, Sum: 4821.3]
 
 `RS` stands for [Remembered
 Set](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-collector-tuning.htm#GUID-A0343B53-A690-4DDE-98F9-9877096DBF0F),
-an internal data structure kept by the JVM for each region.  Its purpose
-is to track inbound from other regions.  Whenever the application
-updates the references (e.g. when we assign a reference field in an
-object), the JVM takes care of updating the RS.
+an internal data structure kept by the JVM for each region. Given a
+region X, its RS would track references from other regions that point to
+objects that reside in X.  Whenever the application updates the
+references (e.g. when we assign a reference field in an object), the JVM
+takes care of updating the RS.
 
 For efficiency reasons those updates are buffered and processed
 concurrently with the application. However, when the JVM starts a
@@ -241,7 +244,7 @@ hypothesis is that the JVM is reacting to this in one of these ways:
   size](http://www.oracle.com/technetwork/articles/java/g1gc-1984535.html)
   is a power of 2 between 1MB and 32MB, but the JVM aims at having ~2048
   regions. The evacuation failures may be prompting the JVM to compact /
-  resize regions, causing more objects to move around.
+  resize, causing more objects to move around.
 * The JVM rollbacks the move of other objects that were already copied
   out of this region.
 
@@ -253,12 +256,12 @@ Moving on. Line 42:
 
     42 [Eden: 9044.0M(9044.0M)->0.0B(320.0M) Survivors: 4096.0K->1132.0M Heap: 16.2G(18.0G)->14.8G(18.0G)]
 
-Young Gen is both Eden (containing brand new objects)+ Survivor spaces
-(containing objects that survived &gt;1 Minor collections, but &lt;
-tenuring threshold).  Eden was completely emptied (9044MB-> 0), and it
-was also shrunk from 9044MB to 320MB.  Some of the objects evacuated
-from Eden stayed in Survivor spaces as they were not yet over the
-tenuring threshold, 1132MB in total.
+Young Gen is both Eden (containing brand new objects) plus Survivor
+spaces (containing objects that survived &gt;1 Minor collections, but
+&lt; tenuring threshold).  Eden was completely emptied (9044MB -> 0),
+and it was also shrunk from 9044MB to 320MB.  Some of the objects
+evacuated from Eden stayed in Survivor spaces as they were not yet over
+the tenuring threshold, 1132MB in total.
 
 The total heap size remains at 18GB (we had an `-Xmx18g`), and usage
 went from 16.2GB -> 14.8GB.  Overall, of the 9GB evacuated from Young
@@ -292,23 +295,23 @@ Let's look at the two main issues.
 
 The most obvious observation is that we're running into trouble as a
 result of allocation pressure.  Frequent Minor GCs are having to scan
-the live objects and moving those that remain across survivor spaces. At
+the live objects and move those that remain across survivor spaces. At
 some points, the JVM ends up spilling objects to Old Gen (and in the
 particular case shown in the graph, triggering a region resize.)
 
-Moreover, those promoted objects close to being garbage and will need to be
+Moreover, those promoted objects are close to being garbage and will need to be
 collected at some point by a Major collection (minor -> young gen, major -> old
 gen). These are the relevant logs from our example:
 
-    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-start]
-    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-end, 0.0001351 secs]
-    2016-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-mark-start]
-    2016-03-15T20:01:51.521+0100: 8164.392: [GC concurrent-mark-end, 3.6726632 secs]
-    2016-03-15T20:01:51.522+0100: 8164.392: [GC remark 8164.393: [GC ref-proc, 0.0003795 secs], 0.1287467 secs]
+    2017-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-start]
+    2017-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-root-region-scan-end, 0.0001351 secs]
+    2017-03-15T20:01:47.849+0100: 8160.719: [GC concurrent-mark-start]
+    2017-03-15T20:01:51.521+0100: 8164.392: [GC concurrent-mark-end, 3.6726632 secs]
+    2017-03-15T20:01:51.522+0100: 8164.392: [GC remark 8164.393: [GC ref-proc, 0.0003795 secs], 0.1287467 secs]
      [Times: user=0.17 sys=0.01, real=0.12 secs]
-    2016-03-15T20:01:51.714+0100: 8164.585: Total time for which application threads were stopped: 0.0634409 seconds
-    2016-03-15T20:01:51.714+0100: 8164.585: [GC concurrent-cleanup-start]
-    2016-03-15T20:01:51.797+0100: 8164.667: [GC concurrent-cleanup-end, 0.0826101 secs]
+    2017-03-15T20:01:51.714+0100: 8164.585: Total time for which application threads were stopped: 0.0634409 seconds
+    2017-03-15T20:01:51.714+0100: 8164.585: [GC concurrent-cleanup-start]
+    2017-03-15T20:01:51.797+0100: 8164.667: [GC concurrent-cleanup-end, 0.0826101 secs]
 
 Which correspond to a light blue line in the graphs. This is relatively cheap
 under G1 because the JVM is able to do most of the work concurrently with the
@@ -319,7 +322,7 @@ This Major collection needs an initial phase, which can be spotted with the
 "initial-mark" tag in a Minor collection (the Old Gen collector piggy backs on
 it.) I'm cutting the details, but note the additional time:
 
-    2016-03-15T20:01:46.983+0100: 8159.853: [GC pause (G1 Evacuation Pause) (young) (initial-mark)
+    2017-03-15T20:01:46.983+0100: 8159.853: [GC pause (G1 Evacuation Pause) (young) (initial-mark)
     Desired survivor size 75497472 bytes, new threshold 1 (max 15)
     [...]
      [Times: user=10.49 sys=0.13, real=0.86 secs]
@@ -335,9 +338,8 @@ expensive](https://docs.oracle.com/javase/9/gctuning/garbage-first-garbage-colle
 
 In general, we want to aim at tuning our workloads for two properties:
 
-* **Minimize Minor collections** (so that we avoid scans over the live
-  set in the Young Gen, and copying between survivor spaces.)  This is
-  achieved by:
+* **Minimize Minor collections**: so that we avoid scans over the live
+  set in the Young Gen, and copying between survivor spaces.
 * **Make each Minor collection count**: by tuning your app's workload so
   that each collection releases sufficient space in the Young gen to
   avoid promoting any objects.
@@ -364,23 +366,24 @@ have to clean after it's served. This information, plus heap sizes,
 helps doing reasonable capacity planning on your servers.
 
 For example, at 1MB/request and 100 requests/s, a Young gen with 100MB
-will fill up once per second.
+will fill up roughly once per second.
 
 Of course, generating less garbage always helps, but that's a topic for
 another post.
 
 ## Poor GC throughput
 
-Although our application's workload is causing too much work on the
-garbage collector, looking at the actual times they look excessive.
+Although our application's workload is certainly causing too much work
+on the garbage collector, looking at the actual times they look
+excessive.
 
 Having 18 threads move ~6GB in 77s *per thread* implies that each
 thread's throughput was a tiny 4.3MB/s. Just for the sake of comparison,
-the same application running in a similar hardware spit GC logs
-reporting making 407 MB/s. Regardless of the theoretical JVM throughput,
-a 100x difference indicates that something is impacting the performance
-of GC worker threads.  It's not about only about the amount of garbage
-we're generating.
+the same application running in similar hardware spit GC logs reporting
+making 407 MB/s. Regardless of the theoretical memory and JVM
+throughput, a 100x difference indicates that something is impacting the
+performance of GC worker threads on that specific environment.  It's not
+about only about the amount of garbage we're generating.
 
 LinkedIn has a
 [couple](https://engineering.linkedin.com/garbage-collection/garbage-collection-optimization-high-throughput-and-low-latency-java-applications)
